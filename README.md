@@ -7,6 +7,7 @@ I would like to use this as a place to host documents for collaboration into the
 To access it, you'll need the following software:
 
 Texas Instruments Code Composer Studio (CCS)
+
 Altium Designer
 
 A thorough documentation of changes to code prior to 2/13/2020 can be found in the file "Software Notes as of 2/13/2020."
