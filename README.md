@@ -9,4 +9,4 @@ To access it, you'll need the following software:
 Code Composer Studio (CCS) from Texas Instruments
 Altium Designer
 
-A thorough documentation of changes to code prior to 2/13/2020 can be found in the file "Software Notes as of 2/13/2020."
+A thorough documentation of changes to code prior to 2/13/2020 can be found in the file Software Notes as of 2/13/2020.
