@@ -1,0 +1,26 @@
+----------------------------------------------------------------------------------------------------------------------------------
+NCDrill File Report For: DAB_PCB.PcbDoc   12/19/2019  4:23:59 PM
+----------------------------------------------------------------------------------------------------------------------------------
+
+Layer Pair : Top Layer to Bottom Layer
+ASCII RoundHoles File : DAB_PCB.TXT
+ASCII RectHoles File : DAB_PCB-RectHoles.TXT
+
+Tool       Hole Size               Hole Tolerance               Hole Type       Hole Count   Plated         Tool Travel
+----------------------------------------------------------------------------------------------------------------------------------
+T1      8mil (0.203mm)                                            Round             651       PTH        43.12inch (1095.18mm)
+T2      10mil (0.254mm)                                           Round             414       PTH        31.82inch (808.32mm)
+T3      20mil (0.5mm)                                             Round             54        PTH        26.34inch (669.14mm)
+T4      20mil (0.508mm)                                           Round             27        PTH        14.27inch (362.36mm)
+T5      32mil (0.813mm)                                           Round             7         PTH        0.70inch (17.78mm)
+T6      35mil (0.9mm)                                             Round             65        PTH        10.96inch (278.34mm)
+T7      39mil (1mm)                                               Round             2         PTH        0.10inch (2.54mm)
+T8      55mil (1.4mm)                                             Round             12        PTH        3.55inch (90.17mm)
+T9      61mil (1.54mm)                                            Rectangle         2         PTH        1.50inch (38.12mm)
+T10     63mil (1.6mm)                                             Round             14        PTH        7.75inch (196.89mm)
+T11     79mil (2mm)                                               Round             6         PTH        2.97inch (75.37mm)
+T12     98mil (2.5mm)                                             Round             2         PTH        0.60inch (15.20mm)
+----------------------------------------------------------------------------------------------------------------------------------
+Totals                                                                              1256
+
+Total Processing Time (hh:mm:ss) : 00:00:01
