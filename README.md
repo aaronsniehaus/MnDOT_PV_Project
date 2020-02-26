@@ -6,9 +6,11 @@ I would like to use this as a place to host documents for collaboration into the
 
 To access it, you'll need the following software:
 
-Texas Instruments Code Composer Studio (CCS)
+Texas Instruments Code Composer Studio (CCS),
 
-Altium Designer
+Altium Designer,
+
+Texas Instruments C2000Ware Package for CCS
 
 The code as of 2/19/2020 is fully functional for open loop control. ADC values are constantly updated at a sufficient rate and write to an array of 6 ADC values, at a pre-defined number of samples over time, "SampleDepth." 
 
