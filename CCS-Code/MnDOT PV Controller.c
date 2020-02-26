@@ -93,23 +93,30 @@ double long TimeStamp[16] = {0,0,0,0};                  //Timestamps. A descript
 //
 //  ADC Feedback Variables
 //
-const int SampleDepth = 50;                              //Number of samples stored in ADC Matrices. Set this to however many samples you need.
-const float SampleDepthQuotient = 1/SampleDepth;           //Calculate beforehand to avoid divisions in the interrupts
+const int SampleDepth = 50;                  //Number of samples stored in ADC Matrices. Set this to however many samples you need.
+const double SampleDepthQuotient = (double)1/SampleDepth;           //Calculate beforehand to avoid divisions in the interrupts
 
 float ADCValues[2][8][SampleDepth];
 float ADCVoltages[2][8][SampleDepth];
 float ADCVoltagesRMS[2][8];
-int CurrentSample[8] = {0};
+int CurrentSample[8] = {0,0,0,0,0,0,0,0};
 long int ADCIntCounter = 0;
 float maxVoltage[2][8];
 float RMSVoltage;
 long int ConversionCounter = 0;
 
+double InputData1[SampleDepth];
+double RMS;
+double Sum = 0;
+double Square[SampleDepth];
+
+
+
 
 //
 // All PWM periods are defined by EPWM_PERIOD = 150, 250 kHz in this example.
 //
-#define EPWM1_TIMER_TBPRD  150                  // Period register
+#define EPWM1_TIMER_TBPRD  EPWM_PERIOD                  // Period register
 #define EPWM1_MAX_CMPA     EPWM_PERIOD
 #define EPWM1_MIN_CMPA     0
 #define EPWM1_MAX_CMPB     EPWM_PERIOD
@@ -377,13 +384,14 @@ void main(void)
     //
     for(;;)
     {
+        //RMSVoltage = GetRMS(ADCValues[0][0]);
     }
 }
 
 __interrupt void 
 epwm1_isr(void)
 {
-    //Toggle();
+    Toggle();
     //
     // Clear INT flag for this timer
     //
@@ -394,24 +402,27 @@ epwm1_isr(void)
     CheckMaster();
     Toggle();
     UpdateADCMatrix();
-    Toggle();
+    RMSVoltage = GetRMS(ADCValues[0][0]);
 
     //
     //Generate 60 Hz sine wave on ePWM 5 & 6, use N to simulate time
     //
-    //EPwm5Regs.CMPA.half.CMPA =  EPWM5_HALF_CMPA + EPWM5_HALF_CMPA*sin(PI*N*SineFactor);
-    //EPwm5Regs.CMPB =            EPWM5_HALF_CMPB + EPWM5_HALF_CMPB*sin(PI*N*SineFactor);
-    //EPwm6Regs.CMPA.half.CMPA =  EPWM6_HALF_CMPA + EPWM6_HALF_CMPA*sin(PI*N*SineFactor);
-    //EPwm6Regs.CMPB =            EPWM6_HALF_CMPB + EPWM6_HALF_CMPB*sin(PI*N*SineFactor);
+    EPwm5Regs.CMPA.half.CMPA =  EPWM5_HALF_CMPA + EPWM5_HALF_CMPA*sin(PI*N*SineFactor);
+    EPwm5Regs.CMPB =            EPWM5_HALF_CMPB + EPWM5_HALF_CMPB*sin(PI*N*SineFactor);
+    EPwm6Regs.CMPA.half.CMPA =  EPWM6_HALF_CMPA + EPWM6_HALF_CMPA*sin(PI*N*SineFactor);
+    EPwm6Regs.CMPB =            EPWM6_HALF_CMPB + EPWM6_HALF_CMPB*sin(PI*N*SineFactor);
+    N++;
 
-    //    N++;
 
     if ((N*PI*SineFactor) >= 2*PI ){            // Prevent overflow by resetting N at zero phase of sine wave.
         N = 0;
         Pulse2();
         TimeStamp[1] = Nanoseconds;
         }
+
+    EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD*0.5;
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
+    Toggle();
 }
 
 
@@ -444,7 +455,7 @@ epwm2_isr(void)
 __interrupt void 
 epwm3_isr(void)
 {
-    //Toggle();
+    Toggle();
     //
     // Clear INT flag for this timer
     //
@@ -459,7 +470,7 @@ epwm3_isr(void)
 __interrupt void
 epwm4_isr(void)
 {
-    //Toggle();
+    Toggle();
     //
     // Clear INT flag for this timer
     //
@@ -469,13 +480,13 @@ epwm4_isr(void)
     // Acknowledge this interrupt to receive more interrupts from group 3
     //
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
-    //RMSVoltage = GetRMS(ADCValues[0][0]);
+
 }
 
 __interrupt void
 epwm5_isr(void)
 {
-    //Toggle();
+    Toggle();
     // Clear INT flag for this timer
     EPwm5Regs.ETCLR.bit.INT = 1;
 
@@ -486,7 +497,7 @@ epwm5_isr(void)
 __interrupt void
 epwm6_isr(void)
 {
-    //Toggle();
+    Toggle();
     // Clear INT flag for this timer
     EPwm6Regs.ETCLR.bit.INT = 1;
 
@@ -618,7 +629,7 @@ InitEPwm1Example(void)
     //
     // Setup compare
     //
-    EPwm1Regs.CMPA.half.CMPA = 75;
+    EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD/2;
 
     //
     // Set actions
@@ -750,9 +761,9 @@ InitEPwm3Example(void)
     //
     // Interrupt where we will change the Compare Values
     //
-    EPwm3Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
-    EPwm3Regs.ETSEL.bit.INTEN = 1;                // Enable INT
-    EPwm3Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
+    //EPwm3Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
+    //EPwm3Regs.ETSEL.bit.INTEN = 1;                // Enable INT
+    //EPwm3Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
 
     //
     //  Set CMPA and CMPB to give a 50% Duty Cycle
@@ -806,9 +817,9 @@ InitEPwm4Example(void)
     //
     //   Interrupt where we will change the Compare Values
     //
-    EPwm4Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
-    EPwm4Regs.ETSEL.bit.INTEN = 1;                // Enable INT
-    EPwm4Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
+    //EPwm4Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
+    //EPwm4Regs.ETSEL.bit.INTEN = 1;                // Enable INT
+    //EPwm4Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
 
     //
     //  Set CMPA and CMPB to give a 50% Duty Cycle
@@ -877,9 +888,9 @@ InitEPwm5Example(void)
     //
     //   Interrupt where we will change the Compare Values
     //
-    EPwm5Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
-    EPwm5Regs.ETSEL.bit.INTEN = 1;                // Enable INT
-    EPwm5Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
+    //EPwm5Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
+    //EPwm5Regs.ETSEL.bit.INTEN = 1;                // Enable INT
+    //EPwm5Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
 
     //
     //   Set CMPA and CMPB to give a 50% Duty Cycle
@@ -945,9 +956,9 @@ InitEPwm6Example(void)
     //
     //   Interrupt where we will change the Compare Values
     //
-    EPwm6Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
-    EPwm6Regs.ETSEL.bit.INTEN = 1;                // Enable INT
-    EPwm6Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
+    //EPwm6Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
+    //EPwm6Regs.ETSEL.bit.INTEN = 1;                // Enable INT
+    //EPwm6Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
 
 
     //
@@ -1023,7 +1034,7 @@ UpdateADCMatrix(void){
         //GetVoltage: (InputData-36060)*0.00004538
 
         ADCValues[0][0][CurrentSample[0]]   = AdcRegs.ADCRESULT0;
-        ADCVoltages[0][0][CurrentSample[0]] = GetVoltage(ADCValues[0][0][CurrentSample[0]]);
+        //ADCVoltages[0][0][CurrentSample[0]] = GetVoltage(ADCValues[0][0][CurrentSample[0]]);
 
         //ADCValues[1][0][CurrentSample[0]]   = AdcRegs.ADCRESULT1;
         //ADCVoltages[1][0][CurrentSample[0]] = GetVoltage(ADCValues[1][0][CurrentSample[0]]);
@@ -1033,7 +1044,7 @@ UpdateADCMatrix(void){
         // Update ADC 1, ADCVoltages[] Respectively
 
         ADCValues[0][1][CurrentSample[1]]   = AdcRegs.ADCRESULT2;
-        ADCVoltages[0][1][CurrentSample[1]] = GetVoltage(ADCValues[0][1][CurrentSample[1]]);
+        //ADCVoltages[0][1][CurrentSample[1]] = GetVoltage(ADCValues[0][1][CurrentSample[1]]);
 
         //ADCValues[1][1][CurrentSample[1]]   = AdcRegs.ADCRESULT3;
         //ADCVoltages[1][1][CurrentSample[1]] = GetVoltage(ADCValues[1][1][CurrentSample[1]]);
@@ -1043,7 +1054,7 @@ UpdateADCMatrix(void){
         // Update ADC 2, ADCVoltages[] Respectively
 
         ADCValues[0][2][CurrentSample[2]]   = AdcRegs.ADCRESULT4;
-        ADCVoltages[0][2][CurrentSample[2]] = GetVoltage(ADCValues[0][2][CurrentSample[2]]);
+        //ADCVoltages[0][2][CurrentSample[2]] = GetVoltage(ADCValues[0][2][CurrentSample[2]]);
 
         //ADCValues[1][2][CurrentSample[2]]   = AdcRegs.ADCRESULT5;
         //ADCVoltages[1][2][CurrentSample[2]] = GetVoltage(ADCValues[1][2][CurrentSample[2]]);
@@ -1055,49 +1066,49 @@ UpdateADCMatrix(void){
         ADCValues[0][3][CurrentSample[3]]   = AdcRegs.ADCRESULT6;
         //ADCVoltages[0][3][CurrentSample[3]] = GetVoltage(ADCValues[0][3][CurrentSample[3]]);
 
-        ADCValues[1][3][CurrentSample[3]]   = AdcRegs.ADCRESULT7;
+        //ADCValues[1][3][CurrentSample[3]]   = AdcRegs.ADCRESULT7;
         //ADCVoltages[1][3][CurrentSample[3]] = GetVoltage(ADCValues[1][3][CurrentSample[3]]);
         CurrentSample[3]++;
 
 
         // Update ADC 4, ADCVoltages[] Respectively
 
-        ADCValues[0][4][CurrentSample[4]]   = AdcRegs.ADCRESULT8;
-        ADCVoltages[0][4][CurrentSample[4]] = GetVoltage(ADCValues[0][4][CurrentSample[4]]);
+        //ADCValues[0][4][CurrentSample[4]]   = AdcRegs.ADCRESULT8;
+        //ADCVoltages[0][4][CurrentSample[4]] = GetVoltage(ADCValues[0][4][CurrentSample[4]]);
 
         //ADCValues[1][4][CurrentSample[4]]   = AdcRegs.ADCRESULT9;
         //ADCVoltages[1][4][CurrentSample[4]] = GetVoltage(ADCValues[1][4][CurrentSample[4]]);
-        CurrentSample[4]++;
+        //CurrentSample[4]++;
 
 
         // Update ADC 5, ADCVoltages[] Respectively
 
-        ADCValues[0][5][CurrentSample[5]]   = AdcRegs.ADCRESULT10;
-        ADCVoltages[0][5][CurrentSample[5]] = GetVoltage(ADCValues[0][5][CurrentSample[5]]);
+        //ADCValues[0][5][CurrentSample[5]]   = AdcRegs.ADCRESULT10;
+        //ADCVoltages[0][5][CurrentSample[5]] = GetVoltage(ADCValues[0][5][CurrentSample[5]]);
 
         //ADCValues[1][5][CurrentSample[5]]   = AdcRegs.ADCRESULT11;
         //ADCVoltages[1][5][CurrentSample[5]] = GetVoltage(ADCValues[1][5][CurrentSample[5]]);
-        CurrentSample[5]++;
+        //CurrentSample[5]++;
 
 
         // Update ADC 6, ADCVoltages[] Respectively
 
-        ADCValues[0][6][CurrentSample[6]]   = AdcRegs.ADCRESULT12;
+        //ADCValues[0][6][CurrentSample[6]]   = AdcRegs.ADCRESULT12;
         //ADCVoltages[0][6][CurrentSample[6]] = GetVoltage(ADCValues[0][6][CurrentSample[6]]);
 
         //ADCValues[1][0][CurrentSample[6]]   = AdcRegs.ADCRESULT13;
         //ADCVoltages[1][0][CurrentSample[6]] = GetVoltage(ADCValues[1][0][CurrentSample[6]]);
-        CurrentSample[6]++;
+        //CurrentSample[6]++;
 
 
         // Update ADC 7, ADCVoltages[] Respectively
 
-        ADCValues[0][7][CurrentSample[7]]   = AdcRegs.ADCRESULT14;
+        //ADCValues[0][7][CurrentSample[7]]   = AdcRegs.ADCRESULT14;
         //ADCVoltages[0][7][CurrentSample[7]] = GetVoltage(ADCValues[0][7][CurrentSample[7]]);
         //
         //ADCValues[1][7][CurrentSample[7]]   = AdcRegs.ADCRESULT15;
         //ADCVoltages[1][7][CurrentSample[7]] = GetVoltage(ADCValues[1][7][CurrentSample[7]]);
-        CurrentSample[7]++;
+        //CurrentSample[7]++;
 
 
         ConversionCounter = ADCIntCounter;
@@ -1109,17 +1120,28 @@ UpdateADCMatrix(void){
 //  Calculate RMS value of given samples
 //
 float GetRMS(float InputData[SampleDepth]) {
-    float Square[SampleDepth] = {0};
-    float RMS;
-    float Sum = 0;
+    Sum = 0;
+    for (i=0; i<SampleDepth;i++) {
+        InputData1[i]=(double)InputData[i];
+    }
+    for (i=0; i<SampleDepth;i++) {
+            Square[i]=0;
+    }
+
 
     for (i=0; i < SampleDepth; i++){                //Square the samples
-        Square[i] = InputData[i]*InputData[i];
+        Square[i] = InputData1[i]*InputData1[i];
         Sum = Sum + Square[i];                      //Calculate the sum
     }
-    RMS = sqrt(Sum * SampleDepthQuotient);          //SampleDepthQuotient = 1/SampleDepth.
+
+
+    RMS = (float) sqrt(Sum * SampleDepthQuotient);          //SampleDepthQuotient = 1/SampleDepth.
                                                     //Use this to compute the mean of Square[], and then take sqrt.
     return RMS;
+}
+
+float DisableBoost(float InputData[SampleDepth]) {
+    EPwm1Regs.TZFRC.bit.
 }
 
 
