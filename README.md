@@ -14,7 +14,7 @@ Texas Instruments C2000Ware Package for CCS
 
 The code as of 2/19/2020 is fully functional for open loop control. ADC values are constantly updated at a sufficient rate and write to an array of 6 ADC values, at a pre-defined number of samples over time, "SampleDepth." 
 
-EPWM 1 -6 run at 250kHz, and the sine output around 60.3 Hz. 
+EPWM 1 -6 run at 250kHz, and the filtered sine output around 60.3 Hz. 
 
 Synchronization can be done using the two-pin header, and in software this is controlled by the "CheckMaster" function. If a master synchronization signal is not detected within 3 continuous power cycles, the software will change to master mode automatically.
 
