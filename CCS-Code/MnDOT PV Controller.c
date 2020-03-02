@@ -45,14 +45,14 @@
 //
 typedef struct
 {
-    volatile struct EPWM_REGS *EPwmRegHandle;
-    Uint16 EPwm_CMPA_Direction;
-    Uint16 EPwm_CMPB_Direction;
+   volatile struct EPWM_REGS *EPwmRegHandle;
+    //Uint16 EPwm_CMPA_Direction;
+    //Uint16 EPwm_CMPB_Direction;
     Uint16 EPwmTimerIntCount;
-    Uint16 EPwmMaxCMPA;
-    Uint16 EPwmMinCMPA;
-    Uint16 EPwmMaxCMPB;
-    Uint16 EPwmMinCMPB;
+    //Uint16 EPwmMaxCMPA;
+    //Uint16 EPwmMinCMPA;
+    //Uint16 EPwmMaxCMPB;
+    //Uint16 EPwmMinCMPB;
 } EPWM_INFO;
 
 //
@@ -76,10 +76,10 @@ Uint16 ConversionCount;
 //
 //  Sine Function Variables
 //
-float PI = 3.14159265;
+double PI = 3.14159265;
 long int N = 0;
 volatile long i;
-float SineFactor = (1/(4.57*(EPWM_PERIOD)));            //Calculate the factor for the 60 Hz sine argument to avoid division ops in the interrupts
+double SineFactor = (1/(4.57*(EPWM_PERIOD)));            //Calculate the factor for the 60 Hz sine argument to avoid division ops in the interrupts
 
 //
 //  Sync Variables
@@ -93,23 +93,37 @@ double long TimeStamp[16] = {0,0,0,0};                  //Timestamps. A descript
 //
 //  ADC Feedback Variables
 //
-const int SampleDepth = 50;                  //Number of samples stored in ADC Matrices. Set this to however many samples you need.
-const double SampleDepthQuotient = (double)1/SampleDepth;           //Calculate beforehand to avoid divisions in the interrupts
+const int SampleDepth = 50;                                         //Number of samples stored in ADC Matrices. Set this to however many samples you need.
 
-float ADCValues[2][8][SampleDepth];
-float ADCVoltages[2][8][SampleDepth];
-float ADCVoltagesRMS[2][8];
+
+const double SampleDepthQuotient = (double)1/SampleDepth;           //Calculate beforehand to avoid divisions in the interrupts
+double ADCValues[2][8][SampleDepth];
+double ADCVoltages[2][8][SampleDepth];
+double ADCVoltagesRMS[2][8];
 int CurrentSample[8] = {0,0,0,0,0,0,0,0};
 long int ADCIntCounter = 0;
-float maxVoltage[2][8];
-float RMSVoltage;
+double RMSVoltage;
 long int ConversionCounter = 0;
 
-double InputData1[SampleDepth];
-double RMS;
-double Sum = 0;
+//double InputData1[SampleDepth];
 double Square[SampleDepth];
+int ErrorStatus = 0;
 
+//
+//  "Real" Values
+//
+
+double Scalars[6] = {0,0,0,0,0,0};
+
+double VinRMS = 0;
+double VinACRMS = 0;    //Delete later
+double IinRMS = 0;
+double VoutRMS = 0;
+double IoutRMS = 0;
+double VBus1 = 0;
+double VBus2 = 0;
+
+double ADC1DC = 0;
 
 
 
@@ -202,9 +216,16 @@ void InitializeADC (void);
 void Pulse(void);
 void Pulse2(void);
 void DelayLoop(int k);
-float GetVoltage(float InputData);
+double GetDCVoltage(double InputData);
+double GetACVoltage(double InputData);
 void UpdateADCMatrix();
-float GetRMS(float InputData[SampleDepth]);
+double GetRMS(double InputData[SampleDepth]);
+double GetACRMS (double InputData[SampleDepth]);
+double GetAverage(double InputData[SampleDepth]);
+void DisableAllSwitches(void);
+void EnableAllSwitches(void);
+void ShortOutput(void);
+void Toggle(void);
 
 
 
@@ -382,6 +403,7 @@ void main(void)
     //
     // Wait for ADC interrupt
     //
+    EnableAllSwitches();
     for(;;)
     {
         //RMSVoltage = GetRMS(ADCValues[0][0]);
@@ -400,9 +422,7 @@ epwm1_isr(void)
     Nanoseconds = Nanoseconds+((27*150));    //Keeps track of number of nanoseconds past.
 
     CheckMaster();
-    Toggle();
     UpdateADCMatrix();
-    RMSVoltage = GetRMS(ADCValues[0][0]);
 
     //
     //Generate 60 Hz sine wave on ePWM 5 & 6, use N to simulate time
@@ -422,6 +442,8 @@ epwm1_isr(void)
 
     EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD*0.5;
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
+    VinRMS = GetDCVoltage(GetRMS(ADCValues[0][0]));
+    IinRMS = GetACRMS(ADCValues[0][1]);
     Toggle();
 }
 
@@ -977,9 +999,11 @@ CheckMaster(void){
     if (Nanoseconds - TimeStamp[0] >= 50000000)
     {
         MasterSlave = 1;                    //If we haven't received a signal in the last 50 ms, become master.
-        }
+
+    }
     else {
         MasterSlave = 0;                    //Assume slave mode.
+
     }
 }
 
@@ -1007,10 +1031,21 @@ DelayLoop(int k){
 //
 //  Converts Numbers from ADC Data to Voltages, with offset bias circuit considered.
 //
-float
-GetVoltage(float InputData){
+double
+GetDCVoltage(double InputData){
 
-    float Voltage = InputData;//((InputData-36060)*0.00004538);
+    double Voltage = ((InputData-36060)*0.00004538);
+    return Voltage;
+
+}
+
+//
+//  Converts Numbers from ADC Data to Voltages, with no offset bias. This is good for AC signals.
+//
+double
+GetACVoltage(double InputData) {
+
+    double Voltage = ((InputData)*0.00004538);
     return Voltage;
 
 }
@@ -1119,33 +1154,103 @@ UpdateADCMatrix(void){
 //
 //  Calculate RMS value of given samples
 //
-float GetRMS(float InputData[SampleDepth]) {
-    Sum = 0;
-    for (i=0; i<SampleDepth;i++) {
-        InputData1[i]=(double)InputData[i];
-    }
+double GetRMS(double InputData[SampleDepth]) {
+    double Sum = 0;
+
     for (i=0; i<SampleDepth;i++) {
             Square[i]=0;
     }
 
-
-    for (i=0; i < SampleDepth; i++){                //Square the samples
-        Square[i] = InputData1[i]*InputData1[i];
-        Sum = Sum + Square[i];                      //Calculate the sum
+    for (i=0; i < SampleDepth; i++){                        //Square the samples
+        Square[i] = InputData[i]*InputData[i];
+        Sum = Sum + Square[i];                              //Calculate the sum
     }
 
-
-    RMS = (float) sqrt(Sum * SampleDepthQuotient);          //SampleDepthQuotient = 1/SampleDepth.
-                                                    //Use this to compute the mean of Square[], and then take sqrt.
-    return RMS;
+    double RMSOut = sqrt(Sum * SampleDepthQuotient);           //SampleDepthQuotient = 1/SampleDepth.
+                                                                    //Use this to compute the mean of Square[], and then take sqrt.
+    return RMSOut;
 }
 
-float DisableBoost(float InputData[SampleDepth]) {
-    EPwm1Regs.TZFRC.bit.
+double
+GetACRMS (double InputData[SampleDepth]){
+
+    double Sum = 0;
+    double Average = GetAverage(InputData);                //Calculate DC component
+
+    for (i=0; i<SampleDepth;i++) {
+            Square[i]=0;
+    }
+
+    for (i=0; i < SampleDepth; i++){                                    //Square value - DC component
+        Square[i] = (InputData[i]-Average)*(InputData[i]-Average);
+        Sum = Sum + Square[i];                                          //Calculate the sum
+    }
+
+    double ACRMSOut = sqrt(Sum * SampleDepthQuotient);           //SampleDepthQuotient = 1/SampleDepth.
+                                                                    //Use this to compute the mean of Square[], and then take sqrt.
+    return ACRMSOut;
+}
+
+double
+GetAverage (double InputData[SampleDepth]){
+
+    double Sum = 0;
+    double AverageOut = 0;
+
+    for (i=0; i < SampleDepth; i++){                    //Square the samples
+            Sum = Sum + InputData[i];                   //Calculate the sum
+        }
+    AverageOut = Sum * SampleDepthQuotient;             //Compute average using 1/SampleDepth
+
+    return AverageOut;
+}
+
+//
+//  Force Mosfets to off for fault conditions.
+//
+void DisableAllSwitches(void) {
+    EPwm1Regs.AQCSFRC.all = 1;      // 1 = Force low
+    EPwm2Regs.AQCSFRC.all = 1;
+    EPwm3Regs.AQCSFRC.all = 1;
+    EPwm4Regs.AQCSFRC.all = 1;
+    EPwm5Regs.AQCSFRC.all = 1;
+    EPwm6Regs.AQCSFRC.all = 1;
+    if (ErrorStatus == 0){
+        ErrorStatus = 666;
+    }
 }
 
 
-void Toggle(){
+//
+//  Force Mosfets on.
+//
+void EnableAllSwitches(void) {
+    EPwm1Regs.AQCSFRC.all = 3;      // 3 = Disable software forcing
+    EPwm2Regs.AQCSFRC.all = 3;
+    EPwm3Regs.AQCSFRC.all = 3;
+    EPwm4Regs.AQCSFRC.all = 3;
+    EPwm5Regs.AQCSFRC.all = 3;
+    EPwm6Regs.AQCSFRC.all = 3;
+}
+
+//
+//  Short the output stage.
+//
+void ShortOutput(void){
+    EPwm5Regs.AQCSFRC.bit.CSFB = 2; // 2 = Force high
+    EPwm6Regs.AQCSFRC.bit.CSFB = 2;
+}
+
+
+//
+//  Check for all fault conditions
+//
+int CheckFault(void){
+
+}
+
+
+void Toggle(void){
     GpioDataRegs.GPCTOGGLE.bit.GPIO84  = 1;
 }
 
