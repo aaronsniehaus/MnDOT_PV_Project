@@ -11,7 +11,7 @@
 //  GPIO84 (2 Pin Header)...........Output for Sync
 //
 
-//  Timestamp[x...] Descriptions
+//  TimeStamp[x...] Descriptions
 //---------------------------------------------------------------------------------------------------
 //  0 - Sync Signal             1 - Begin Pulse             2 - End Pulse               3 - Undefined
 //---------------------------------------------------------------------------------------------------
@@ -22,13 +22,24 @@
 //  12 - Undefined              13 - Undefined              14 - Undefined              15 - Undefined
 
 
+//  Corresponding ADC Values...
+//----------------------------------------------------------------------------------------------------
+//  ADC0 - PV Voltage           ADC1 - VBus 1               ADC2 - None                 ADC3 - VBus 2
+//----------------------------------------------------------------------------------------------------
+//  ADC4 - Vout+                ADC5 - Iout                 ADC6 - PV Current           ADC7 - None
+//
+
 //
 //  Note: Some of this code is residual from the original EPwmUpAQ Example.
 //  If it's not clear why something is there, it might be unnecessary.
 //
 
 //  Contributors: Aaron Niehaus, MaoHang Qiu, Garret Hoff
-
+//
+//
+//  Disclaimer: This code is for use with a college research project and is not intended for modification.
+//              This text file and accompanying documentation are provided as is, with no intent for sale or implied warranty.
+//
 
 
 
@@ -46,19 +57,8 @@
 typedef struct
 {
    volatile struct EPWM_REGS *EPwmRegHandle;
-    //Uint16 EPwm_CMPA_Direction;
-    //Uint16 EPwm_CMPB_Direction;
     Uint16 EPwmTimerIntCount;
-    //Uint16 EPwmMaxCMPA;
-    //Uint16 EPwmMinCMPA;
-    //Uint16 EPwmMaxCMPB;
-    //Uint16 EPwmMinCMPB;
 } EPWM_INFO;
-
-//
-//  Structure to keep track of waveform properties of each signal. Factors are periodicity of the wave (DC / AC), Period, Frequency, RMS, Crest Factor, and
-//  the waveform itself.
-//
 
 //
 // Globals
@@ -99,7 +99,6 @@ const int SampleDepth = 50;                                         //Number of 
 const double SampleDepthQuotient = (double)1/SampleDepth;           //Calculate beforehand to avoid divisions in the interrupts
 double ADCValues[2][8][SampleDepth];
 double ADCVoltages[2][8][SampleDepth];
-double ADCVoltagesRMS[2][8];
 int CurrentSample[8] = {0,0,0,0,0,0,0,0};
 long int ADCIntCounter = 0;
 double RMSVoltage;
@@ -113,16 +112,16 @@ int ErrorStatus = 0;
 //  "Real" Values
 //
 
-double Scalars[6] = {0,0,0,0,0,0};
+const double Constants[8] = {20,20,1,20,20,1,1,1};    //Scalars to convert input voltage to original value. Voltages = 20, Currents = 1(?)
 
-double VinRMS = 0;
-double VinACRMS = 0;    //Delete later
-double IinRMS = 0;
+double VpvRMS = 0;
+double IpvRMS = 0;
+double VBus1RMS = 0;
+double VBus2RMS = 0;
 double VoutRMS = 0;
 double IoutRMS = 0;
 double VBus1 = 0;
 double VBus2 = 0;
-
 double ADC1DC = 0;
 
 
@@ -197,12 +196,6 @@ double ADC1DC = 0;
 //
 // Function Prototypes
 //
-void InitEPwm1Example(void);
-void InitEPwm2Example(void);
-void InitEPwm3Example(void);
-void InitEPwm4Example(void);
-void InitEPwm5Example(void);
-void InitEPwm6Example(void);
 __interrupt void epwm1_isr(void);
 __interrupt void epwm2_isr(void);
 __interrupt void epwm3_isr(void);
@@ -211,6 +204,16 @@ __interrupt void epwm5_isr(void);
 __interrupt void epwm6_isr(void);
 __interrupt void epwm1_tzint_isr(void);
 __interrupt void ADC_isr(void);
+__interrupt void cpu_timer0_isr(void);
+__interrupt void cpu_timer1_isr(void);
+__interrupt void cpu_timer2_isr(void);
+
+void InitEPwm1(void);
+void InitEPwm2(void);
+void InitEPwm3(void);
+void InitEPwm4(void);
+void InitEPwm5(void);
+void InitEPwm6(void);
 void CheckMaster(void);
 void InitializeADC (void);
 void Pulse(void);
@@ -226,6 +229,7 @@ void DisableAllSwitches(void);
 void EnableAllSwitches(void);
 void ShortOutput(void);
 void Toggle(void);
+void CheckFault(void);
 
 
 
@@ -336,9 +340,10 @@ void main(void)
     PieVectTable.EPWM5_INT = &epwm5_isr;
     PieVectTable.EPWM6_INT = &epwm6_isr;
     PieVectTable.ADCINT = &ADC_isr;
-
-    //  Enable TZ1 Interrupt (PHASE_SYNC_IN)
     PieVectTable.EPWM1_TZINT = &epwm1_tzint_isr;
+    PieVectTable.TINT0 = &cpu_timer0_isr;
+    PieVectTable.XINT13 = &cpu_timer1_isr;
+    PieVectTable.TINT2 = &cpu_timer2_isr;
 
     //  Enable GPC MUX, containing GPIO84 (PHASE_SYNC_OUT)
     //  In the future, this pin may be changed, and the MUX group will need to be changed
@@ -356,6 +361,38 @@ void main(void)
     //
     // InitPeripherals();
 
+    InitCpuTimers();   // For this example, only initialize the Cpu Timers
+
+    #if (CPU_FRQ_150MHZ)
+    //
+    // Configure CPU-Timer 0, 1, and 2 to interrupt every second:
+    // 150MHz CPU Freq, 1 second Period (in uSeconds)
+    //
+    ConfigCpuTimer(&CpuTimer0, 150, 1000000);
+    ConfigCpuTimer(&CpuTimer1, 150, 1000000);
+    ConfigCpuTimer(&CpuTimer2, 150, 1000000);
+    #endif
+
+    #if (CPU_FRQ_100MHZ)
+    //
+    // Configure CPU-Timer 0, 1, and 2 to interrupt every second:
+    // 100MHz CPU Freq, 1 second Period (in uSeconds)
+    //
+    ConfigCpuTimer(&CpuTimer0, 100, 1000000);
+    ConfigCpuTimer(&CpuTimer1, 100, 1000000);
+    ConfigCpuTimer(&CpuTimer2, 100, 1000000);
+    #endif
+
+    //
+    // To ensure precise timing, use write-only instructions to write to the
+    // entire register. Therefore, if any of the configuration bits are changed
+    // in ConfigCpuTimer and InitCpuTimers (in DSP2833x_CpuTimers.h), the
+    // below settings must also be updated.
+    //
+    CpuTimer0Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
+    CpuTimer1Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
+    CpuTimer2Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
+
     //
     // For this example, only initialize the ePWM
     //
@@ -364,12 +401,12 @@ void main(void)
     EDIS;
 
 
-    InitEPwm1Example();
-    InitEPwm2Example();
-    InitEPwm3Example();
-    InitEPwm4Example();
-    InitEPwm5Example();
-    InitEPwm6Example();
+    InitEPwm1();
+    InitEPwm2();
+    InitEPwm3();
+    InitEPwm4();
+    InitEPwm5();
+    InitEPwm6();
     InitializeADC();
 
     EALLOW;
@@ -391,9 +428,11 @@ void main(void)
     // Enable Interrupts in PIE
     //
 
-    IER |= M_INT1;
-    IER |= M_INT3;
-    IER |= M_INT2;
+    IER |= M_INT1;      //ePWM
+    IER |= M_INT3;      //ePWM
+    IER |= M_INT2;      //ADC
+    IER |= M_INT13;     //CpuTimer
+    IER |= M_INT14;     //CpuTimer
 
     EINT;               // Enable Global interrupt INTM
     ERTM;               // Enable Global realtime interrupt DBGM
@@ -404,9 +443,8 @@ void main(void)
     // Wait for ADC interrupt
     //
     EnableAllSwitches();
-    for(;;)
-    {
-        //RMSVoltage = GetRMS(ADCValues[0][0]);
+    while(1==1){
+
     }
 }
 
@@ -419,10 +457,14 @@ epwm1_isr(void)
     //
         EPwm1Regs.ETCLR.bit.INT = 1;
 
-    Nanoseconds = Nanoseconds+((27*150));    //Keeps track of number of nanoseconds past.
 
-    CheckMaster();
-    UpdateADCMatrix();
+    Nanoseconds = Nanoseconds+((27*150));   //Keeps track of number of nanoseconds past.
+
+    UpdateADCMatrix();                      //Update our ADC Values
+
+    VpvRMS = Constants[0]*GetDCVoltage(GetRMS(ADCValues[0][0])); //Reference preset constants
+    IpvRMS = Constants[1]*GetACRMS(ADCValues[0][1]);
+
 
     //
     //Generate 60 Hz sine wave on ePWM 5 & 6, use N to simulate time
@@ -441,10 +483,11 @@ epwm1_isr(void)
         }
 
     EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD*0.5;
-    PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
-    VinRMS = GetDCVoltage(GetRMS(ADCValues[0][0]));
-    IinRMS = GetACRMS(ADCValues[0][1]);
+
+    CheckMaster();                              //Check if we're the master or slave
     Toggle();
+
+    PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
 }
 
 
@@ -588,6 +631,50 @@ __interrupt void ADC_isr(void)
 
 }
 
+//
+//  cpu_timer_0_isr - Use this to keep track of Nanoseconds passed
+//
+
+__interrupt void
+cpu_timer0_isr(void)
+{
+    CpuTimer0.InterruptCount++;
+    //CheckFault();
+    //
+    // Acknowledge this interrupt to receive more interrupts from group 1
+    //
+    PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
+}
+
+//
+// cpu_timer1_isr
+//
+__interrupt void
+cpu_timer1_isr(void)
+{
+    CpuTimer1.InterruptCount++;
+    Toggle();
+    //
+    // The CPU acknowledges the interrupt.
+    //
+    EDIS;
+}
+
+//
+// cpu_timer2_isr
+//
+__interrupt void
+cpu_timer2_isr(void)
+{
+    EALLOW;
+    CpuTimer2.InterruptCount++;
+
+    //
+    // The CPU acknowledges the interrupt.
+    //
+    EDIS;
+}
+
 void InitializeADC(void)
 {
         //
@@ -617,7 +704,7 @@ void InitializeADC(void)
 
 
 void 
-InitEPwm1Example(void)
+InitEPwm1(void)
 {
     //
     // Enable TZ1 as cycle by cycle trip source
@@ -678,7 +765,7 @@ InitEPwm1Example(void)
 
 
 void 
-InitEPwm2Example(void)
+InitEPwm2(void)
 {
 
     // Enable SOCA for ADC measurements
@@ -740,7 +827,7 @@ InitEPwm2Example(void)
 
 
 void 
-InitEPwm3Example(void)
+InitEPwm3(void)
 {
     //
     // Setup TBCLK
@@ -796,7 +883,7 @@ InitEPwm3Example(void)
 
 
 void
-InitEPwm4Example(void)
+InitEPwm4(void)
 {
     //
     //   Setup TBCLK
@@ -853,7 +940,7 @@ InitEPwm4Example(void)
 }
 
 void
-InitEPwm5Example(void)
+InitEPwm5(void)
 {
     //
     //   Enable TZ1 as cycle by cycle trip source
@@ -922,7 +1009,7 @@ InitEPwm5Example(void)
 }
 
 void
-InitEPwm6Example(void)
+InitEPwm6(void)
 {
     //
     //   Enable TZ1 as cycle by cycle trip source
@@ -1029,7 +1116,7 @@ DelayLoop(int k){
 }
 
 //
-//  Converts Numbers from ADC Data to Voltages, with offset bias circuit considered.
+//  Converts Numbers from ADC Data to Voltages, with biasing considered.
 //
 double
 GetDCVoltage(double InputData){
@@ -1040,7 +1127,8 @@ GetDCVoltage(double InputData){
 }
 
 //
-//  Converts Numbers from ADC Data to Voltages, with no offset bias. This is good for AC signals.
+//  Converts Numbers from ADC Data to Voltages, with no offset bias.
+//  This is good for AC signals where RMS has already been calculated.
 //
 double
 GetACVoltage(double InputData) {
@@ -1237,16 +1325,73 @@ void EnableAllSwitches(void) {
 //  Short the output stage.
 //
 void ShortOutput(void){
+    EPwm1Regs.AQCSFRC.all = 1;      // 1 = Force low
+    EPwm2Regs.AQCSFRC.all = 1;
+    EPwm3Regs.AQCSFRC.all = 1;
+    EPwm4Regs.AQCSFRC.all = 1;
+    EPwm5Regs.AQCSFRC.bit.CSFA = 1;
+    EPwm6Regs.AQCSFRC.bit.CSFA = 1;
+
     EPwm5Regs.AQCSFRC.bit.CSFB = 2; // 2 = Force high
     EPwm6Regs.AQCSFRC.bit.CSFB = 2;
 }
 
 
 //
-//  Check for all fault conditions
+//  Check for all fault conditions (Over voltage, Under voltage, Over current)
 //
-int CheckFault(void){
 
+void CheckFault(void){
+    if (VpvRMS >= 50){
+        ErrorStatus = 1;
+        DisableAllSwitches();
+        ShortOutput();
+    }
+    if (VpvRMS <= 0){
+        ErrorStatus = 2;
+        DisableAllSwitches();
+        ShortOutput();
+    }
+    if (IpvRMS >= 20){
+        ErrorStatus = 3;
+        DisableAllSwitches();
+        ShortOutput();
+    }
+
+
+    if (VBus1RMS >= 50){
+        ErrorStatus = 4;
+        DisableAllSwitches();
+    }
+    if (VBus1RMS <= 0){
+        ErrorStatus = 5;
+        DisableAllSwitches();
+    }
+
+
+    if (VBus2RMS >= 65){
+        ErrorStatus = 6;
+        DisableAllSwitches();
+        }
+    if (VBus2RMS <= 0){
+        ErrorStatus = 7;
+        DisableAllSwitches();
+    }
+
+
+    if (VoutRMS >= 65){
+        ErrorStatus = 8;
+        DisableAllSwitches();
+    }
+    if (IoutRMS >= 20){
+        ErrorStatus = 9;
+        DisableAllSwitches();
+    }
+
+    else{
+        ErrorStatus = 0;
+    }
+    return;
 }
 
 
