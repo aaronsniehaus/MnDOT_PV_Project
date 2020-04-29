@@ -1,9 +1,9 @@
 //
 //  MnDOT Research Project, SOPI Solar Panel Inverter
 //
-//  Overview of Functions:
+//  OVERVIEW OF FUNCTIONS:
 //
-//  EPWM 1..........................Boost Stage
+//  EPWM 1..........................Boost Stage.                M(D)  =  1/(EPWM1B)  =  1/(1-EPWM1A)
 //  EPWM 2 & 3......................Resonant Inverter Stage
 //  EPWM 4..........................Half Wave Rectifier Stage
 //  EPWM 5 & 6......................Grid Inverter Stage
@@ -13,13 +13,13 @@
 
 //  TimeStamp[x...] Descriptions
 //---------------------------------------------------------------------------------------------------
-//  0 - Sync Signal             1 - Begin Pulse             2 - End Pulse               3 - Undefined
+//  0 - Sync Signal             1 - Begin Pulse             2 - End Pulse               3 - Boost Soft Start Time Increment
 //---------------------------------------------------------------------------------------------------
-//  4 - Undefined               5 - Undefined               6 - Undefined               7 - Undefined
+//  4 - Generic Fault Event     5 - Undefined               6 - Undefined               7 - Undefined
 //---------------------------------------------------------------------------------------------------
 //  8 - Undefined               9 - Undefined               10 - Undefined              11 - Undefined
 //---------------------------------------------------------------------------------------------------
-//  12 - Undefined              13 - Undefined              14 - Undefined              15 - Undefined
+//  12 - Undefined              13 - Undefined              14 - Undefined              15 - Fault Event Clear
 
 
 //  Corresponding ADC Values...
@@ -27,6 +27,21 @@
 //  ADC0 - PV Voltage           ADC1 - VBus 1               ADC2 - None                 ADC3 - VBus 2
 //----------------------------------------------------------------------------------------------------
 //  ADC4 - Vout+                ADC5 - Iout                 ADC6 - PV Current           ADC7 - None
+//
+
+//
+//  Control System Parameters
+//---------------------------------------------------------------------------------------------------------------------------------
+//  |TargetDutyCycle[x]... Target Duty Cycle for parameter x. This allows to increment continuously in a linear soft start fashion.
+//  |------------------------------------------------------------------------------------------------------------------------------
+//  |TargetDutyCycle[0]... Boost, DC Bus 1
+//  |    """        [1]...
+//  |    """        [2]...
+//  |    """        [3]...
+//  |    """        [4]...
+//  |    """        [5]...
+//
+//
 //
 
 //
@@ -42,7 +57,9 @@
 //
 
 
-
+//
+//  Meat and Potatoes:
+//
 
 //
 // Included Files
@@ -103,6 +120,8 @@ int CurrentSample[8] = {0,0,0,0,0,0,0,0};
 long int ADCIntCounter = 0;
 double RMSVoltage;
 long int ConversionCounter = 0;
+int FaultCounter = 0;
+
 
 //double InputData1[SampleDepth];
 double Square[SampleDepth];
@@ -116,13 +135,19 @@ const double Constants[8] = {20,20,1,20,20,1,1,1};    //Scalars to convert input
 
 double VpvRMS = 0;
 double IpvRMS = 0;
-double VBus1RMS = 0;
-double VBus2RMS = 0;
+double VpriRMS = 0;
+double VsecRMS = 0;
 double VoutRMS = 0;
 double IoutRMS = 0;
 double VBus1 = 0;
 double VBus2 = 0;
 double ADC1DC = 0;
+
+//
+//  Control System Parameters
+//
+
+float TargetDutyCycle[0] = 0.5;     //Assume 50% Boost Duty Cycle
 
 
 
@@ -230,6 +255,7 @@ void EnableAllSwitches(void);
 void ShortOutput(void);
 void Toggle(void);
 void CheckFault(void);
+void StartCpuTimers(void);
 
 
 
@@ -247,10 +273,6 @@ void main(void)
     //
     InitSysCtrl();
 
-    //
-    //  Set up the ADC MODCLK
-    //
-
     EALLOW;
 
     #define CPU_FRQ_150MHZ 0x1
@@ -260,18 +282,22 @@ void main(void)
         // HSPCLK = SYSCLKOUT/2*ADC_MODCLK2 = 150/(2*3)   = 25.0 MHz
         //
     #define ADC_MODCLK 0x3
+    ConfigCpuTimer(&CpuTimer0, 150, 100000);
+    ConfigCpuTimer(&CpuTimer1, 150, 100000);
+    ConfigCpuTimer(&CpuTimer2, 150, 100000);
     #endif
         #if (CPU_FRQ_100MHZ)
         //
         // HSPCLK = SYSCLKOUT/2*ADC_MODCLK2 = 100/(2*2)   = 25.0 MHz
         //
+    ConfigCpuTimer(&CpuTimer0, 100, 100);
+    ConfigCpuTimer(&CpuTimer1, 100, 100);
+    ConfigCpuTimer(&CpuTimer2, 100, 100);
         #define ADC_MODCLK 0x2
     #endif
     EDIS;
 
-    EALLOW;
-    SysCtrlRegs.HISPCP.all = ADC_MODCLK;
-    EDIS;
+    StartCpuTimers();
 
     //
     // Step 2. Initialize GPIO:
@@ -291,10 +317,12 @@ void main(void)
     InitEPwm5Gpio();
     InitEPwm6Gpio();
     InitTzGpio();
+
     //
     // Step 3. Clear all interrupts and initialize PIE vector table:
     // Disable CPU interrupts
     //
+
     DINT;
 
     //
@@ -303,7 +331,12 @@ void main(void)
     // are cleared.
     // This function is found in the DSP2833x_PieCtrl.c file.
     //
+
     InitPieCtrl();
+    InitPieVectTable();
+    InitAdc();
+
+
     //
     // Disable CPU interrupts and clear all CPU interrupt flags:
     //
@@ -319,8 +352,6 @@ void main(void)
     // The shell ISR routines are found in DSP2833x_DefaultIsr.c.
     // This function is found in DSP2833x_PieVect.c.
     //
-    InitPieVectTable();
-    InitAdc();
 
 
 
@@ -361,37 +392,13 @@ void main(void)
     //
     // InitPeripherals();
 
-    InitCpuTimers();   // For this example, only initialize the Cpu Timers
-
-    #if (CPU_FRQ_150MHZ)
-    //
-    // Configure CPU-Timer 0, 1, and 2 to interrupt every second:
-    // 150MHz CPU Freq, 1 second Period (in uSeconds)
-    //
-    ConfigCpuTimer(&CpuTimer0, 150, 1000000);
-    ConfigCpuTimer(&CpuTimer1, 150, 1000000);
-    ConfigCpuTimer(&CpuTimer2, 150, 1000000);
-    #endif
-
-    #if (CPU_FRQ_100MHZ)
-    //
-    // Configure CPU-Timer 0, 1, and 2 to interrupt every second:
-    // 100MHz CPU Freq, 1 second Period (in uSeconds)
-    //
-    ConfigCpuTimer(&CpuTimer0, 100, 1000000);
-    ConfigCpuTimer(&CpuTimer1, 100, 1000000);
-    ConfigCpuTimer(&CpuTimer2, 100, 1000000);
-    #endif
-
     //
     // To ensure precise timing, use write-only instructions to write to the
     // entire register. Therefore, if any of the configuration bits are changed
     // in ConfigCpuTimer and InitCpuTimers (in DSP2833x_CpuTimers.h), the
     // below settings must also be updated.
     //
-    CpuTimer0Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
-    CpuTimer1Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
-    CpuTimer2Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
+
 
     //
     // For this example, only initialize the ePWM
@@ -414,14 +421,15 @@ void main(void)
     EDIS;
 
     //
-    // Enable EPWM INTn in the PIE: Group 3 interrupt 1-6
+    // Enable EPWM INTn in the PIE: Group 3 interrupt 1-7
     //
-    PieCtrlRegs.PIEIER3.bit.INTx1 = 1;
-    PieCtrlRegs.PIEIER3.bit.INTx2 = 1;
-    PieCtrlRegs.PIEIER3.bit.INTx3 = 1;
-    PieCtrlRegs.PIEIER3.bit.INTx4 = 1;
-    PieCtrlRegs.PIEIER3.bit.INTx5 = 1;
-    PieCtrlRegs.PIEIER3.bit.INTx6 = 1;
+    PieCtrlRegs.PIEIER3.bit.INTx1 = 1;      //EPwm
+    //PieCtrlRegs.PIEIER3.bit.INTx2 = 1;      //ADC
+    PieCtrlRegs.PIEIER3.bit.INTx3 = 1;      //EPwm
+    //PieCtrlRegs.PIEIER3.bit.INTx4 = 1;      //
+    //PieCtrlRegs.PIEIER3.bit.INTx5 = 1;      //
+    //PieCtrlRegs.PIEIER3.bit.INTx6 = 1;      //
+    PieCtrlRegs.PIEIER1.bit.INTx7 = 1;      //CpuTimers
 
 
     //
@@ -439,35 +447,48 @@ void main(void)
 
     ConversionCount = 0;
 
-    //
-    // Wait for ADC interrupt
-    //
     EnableAllSwitches();
     while(1==1){
 
     }
 }
 
+//
+//  EPWM1 ISR. Most operations are tied to the PWM1 interrupt. This can lead to glitches in the code when the instructions get too long.
+//              In the future, critical timing functions should be moved to a CpuTimer0, 1, or 2 interrupt. These are more stable.
+//
+
 __interrupt void 
 epwm1_isr(void)
 {
-    Toggle();
+    //Toggle();
     //
     // Clear INT flag for this timer
     //
-        EPwm1Regs.ETCLR.bit.INT = 1;
+    EPwm1Regs.ETCLR.bit.INT = 1;
+
+    Nanoseconds = Nanoseconds+12500;    //Nanoseconds is our global time. 12500 comes from the 12.5 us period of the wave measured on a scope.
+
+    if (1==1){
+        TargetDutyCycle[0] = 0.5;
+    }
+
+    UpdateADCMatrix();  //Update our ADC Values
 
 
-    Nanoseconds = Nanoseconds+((27*150));   //Keeps track of number of nanoseconds past.
-
-    UpdateADCMatrix();                      //Update our ADC Values
-
-    VpvRMS = Constants[0]*GetDCVoltage(GetRMS(ADCValues[0][0])); //Reference preset constants
-    IpvRMS = Constants[1]*GetACRMS(ADCValues[0][1]);
+    VpvRMS   = Constants[0]*GetDCVoltage(GetRMS(ADCValues[0][0])); //Reference preset constants
+    VpriRMS  = Constants[1]*GetDCVoltage(GetRMS(ADCValues[0][1]));
+    //VpvRMS   = Constants[2]*GetACRMS(ADCValues[0][2]);
+    //VsecRMS  = Constants[3]*GetDCVoltage(GetRMS(ADCValues[0][3]));
+    //VoutRMS  = Constants[4]*GetACRMS(ADCValues[0][4]);
+    IoutRMS  = Constants[5]*GetACRMS(ADCValues[0][5]);
+    IpvRMS   = Constants[6]*GetDCVoltage(GetRMS(ADCValues[0][6]));
+    //CheckFault();
 
 
     //
-    //Generate 60 Hz sine wave on ePWM 5 & 6, use N to simulate time
+    //  Generate 60 Hz sine wave on ePWM 5 & 6, use N to simulate time
+    //  N should be tied to a timestamp in the future.
     //
     EPwm5Regs.CMPA.half.CMPA =  EPWM5_HALF_CMPA + EPWM5_HALF_CMPA*sin(PI*N*SineFactor);
     EPwm5Regs.CMPB =            EPWM5_HALF_CMPB + EPWM5_HALF_CMPB*sin(PI*N*SineFactor);
@@ -482,10 +503,12 @@ epwm1_isr(void)
         TimeStamp[1] = Nanoseconds;
         }
 
-    EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD*0.5;
 
     CheckMaster();                              //Check if we're the master or slave
-    Toggle();
+
+    SoftStart();
+
+    //Toggle();
 
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
 }
@@ -520,7 +543,7 @@ epwm2_isr(void)
 __interrupt void 
 epwm3_isr(void)
 {
-    Toggle();
+    //Toggle();
     //
     // Clear INT flag for this timer
     //
@@ -535,7 +558,7 @@ epwm3_isr(void)
 __interrupt void
 epwm4_isr(void)
 {
-    Toggle();
+    //Toggle();
     //
     // Clear INT flag for this timer
     //
@@ -551,7 +574,7 @@ epwm4_isr(void)
 __interrupt void
 epwm5_isr(void)
 {
-    Toggle();
+    //Toggle();
     // Clear INT flag for this timer
     EPwm5Regs.ETCLR.bit.INT = 1;
 
@@ -562,7 +585,7 @@ epwm5_isr(void)
 __interrupt void
 epwm6_isr(void)
 {
-    Toggle();
+    //Toggle();
     // Clear INT flag for this timer
     EPwm6Regs.ETCLR.bit.INT = 1;
 
@@ -639,7 +662,8 @@ __interrupt void
 cpu_timer0_isr(void)
 {
     CpuTimer0.InterruptCount++;
-    //CheckFault();
+    //Toggle();
+    // Nanoseconds = Nanoseconds+12100;   //Keeps track of number of nanoseconds past. Based on oscilloscope measurement of timer0.
     //
     // Acknowledge this interrupt to receive more interrupts from group 1
     //
@@ -647,13 +671,30 @@ cpu_timer0_isr(void)
 }
 
 //
-// cpu_timer1_isr
+// cpu_timer1_isr - Use this to capture real values and check for faults.
+
 //
 __interrupt void
 cpu_timer1_isr(void)
 {
     CpuTimer1.InterruptCount++;
-    Toggle();
+
+    //
+    // I can't get cpu timers to work quickly, so this will be used more in the future.
+    // The commented lines can be found in the epwm1 interrupt.
+    //
+
+    //Toggle();
+
+    //VpvRMS   = Constants[0]*GetDCVoltage(GetRMS(ADCValues[0][0])); //Reference preset constants
+    //VpriRMS  = Constants[1]*GetDCVoltage(GetRMS(ADCValues[0][1]));
+    //VpvRMS   = Constants[2]*GetACRMS(ADCValues[0][2]);
+    //VsecRMS  = Constants[3]*GetDCVoltage(GetRMS(ADCValues[0][3]));
+    //VoutRMS  = Constants[4]*GetACRMS(ADCValues[0][4]);
+    //IoutRMS  = Constants[5]*GetACRMS(ADCValues[0][5]);
+    //IpvRMS   = Constants[6]*GetDCVoltage(GetRMS(ADCValues[0][6]));
+    //CheckFault();
+
     //
     // The CPU acknowledges the interrupt.
     //
@@ -738,7 +779,7 @@ InitEPwm1(void)
     //
     // Setup compare
     //
-    EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD/2;
+    EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD*0;
 
     //
     // Set actions
@@ -1081,6 +1122,23 @@ InitEPwm6(void)
 //  If the module does not receive a sync pulse for 3 continuous powerline cycles (50 ms), turn on master.
 //  Timestamp for the last sync pulse is stored in TimeStamp[0].
 
+
+void StartCpuTimers(void){
+    InitCpuTimers();
+    CpuTimer0Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
+    CpuTimer1Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
+    CpuTimer2Regs.TCR.all = 0x4000; //write-only instruction to set TSS bit = 0
+
+    EALLOW;
+    SysCtrlRegs.HISPCP.all = ADC_MODCLK;
+    EDIS;
+}
+
+void InitCMP(void){
+    EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD*0;
+}
+
+
 void
 CheckMaster(void){
     if (Nanoseconds - TimeStamp[0] >= 50000000)
@@ -1313,7 +1371,7 @@ void DisableAllSwitches(void) {
 //  Force Mosfets on.
 //
 void EnableAllSwitches(void) {
-    EPwm1Regs.AQCSFRC.all = 3;      // 3 = Disable software forcing
+    EPwm1Regs.AQCSFRC.all = 3;      // 3 = Enable switch, disable software forcing
     EPwm2Regs.AQCSFRC.all = 3;
     EPwm3Regs.AQCSFRC.all = 3;
     EPwm4Regs.AQCSFRC.all = 3;
@@ -1342,61 +1400,122 @@ void ShortOutput(void){
 //
 
 void CheckFault(void){
+
     if (VpvRMS >= 50){
         ErrorStatus = 1;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
         ShortOutput();
     }
-    if (VpvRMS <= 0){
+    if (VpvRMS <= 30){
         ErrorStatus = 2;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
         ShortOutput();
     }
     if (IpvRMS >= 20){
         ErrorStatus = 3;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
         ShortOutput();
     }
 
 
-    if (VBus1RMS >= 50){
+    if (VpriRMS >= 50){
         ErrorStatus = 4;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
     }
-    if (VBus1RMS <= 0){
+    if (VpriRMS <= 0){
         ErrorStatus = 5;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
     }
 
 
-    if (VBus2RMS >= 65){
+    if (VsecRMS >= 65){
         ErrorStatus = 6;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
         }
-    if (VBus2RMS <= 0){
+    if (VsecRMS <= 0){
         ErrorStatus = 7;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
     }
 
 
     if (VoutRMS >= 65){
         ErrorStatus = 8;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
     }
     if (IoutRMS >= 20){
         ErrorStatus = 9;
         DisableAllSwitches();
+        TimeStamp[4] = Nanoseconds;
     }
 
+    if (FaultCounter >= 3){
+        Enable = 0;
+    }
+
+    if (ErrorStatus == 0 && Nanoseconds - TimeStamp[4]>= 1000000000){   //If the fault is clear after one second, reset the fault counter and make a timestamp.
+        TimeStamp[15] = Nanoseconds;
+        FaultCounter = 0;
+
+    }
+
+
+
     else{
-        ErrorStatus = 0;
+        if (Enable == 1){
+        if (Nanoseconds - TimeStamp[4] >= 50000000){    //Wait for 3 powerline cycles, 50 ms.
+            if (ErrorStatus != 0){
+                InitCMP();                              //Set CMP's to their defaults.
+                EnableAllSwitches();                    //Try starting the switches again.
+
+                ErrorStatus = 0;                        //Clear the error status.
+                FaultCounter++;                         //Increment the fault counter.
+
+                if (FaultCounter >= 3){
+                    Enable = 0;
+                }
+            }
+        }
+    }
     }
     return;
 }
 
 
+//
+//  Simple function to toggle GPIO84 on and off for debugging purposes.
+//
 void Toggle(void){
     GpioDataRegs.GPCTOGGLE.bit.GPIO84  = 1;
+}
+
+
+
+//
+//  Soft start function
+//  If TimeStamp[3] indicates 0.333 ms have passed, change the duty cycle. Full duty cycle is reached in 3 power cycles, 50 ms.
+//
+
+void SoftStart(void){
+
+    if (Nanoseconds - TimeStamp[3] >= 333000){
+        if (EPwm1Regs.CMPA.half.CMPA < (TargetDutyCycle[0]*EPWM_PERIOD)){     //TargetDutyCycle[0] is the duty cycle our boost should be at.
+            EPwm1Regs.CMPA.half.CMPA++;
+            TimeStamp[3] = Nanoseconds;
+        }
+        else if (EPwm1Regs.CMPA.half.CMPA > (TargetDutyCycle[0]*EPWM_PERIOD)){
+            EPwm1Regs.CMPA.half.CMPA--;
+            TimeStamp[3] = Nanoseconds;
+        }
+
+    }
 }
 
 //
