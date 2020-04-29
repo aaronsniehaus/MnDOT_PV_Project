@@ -23,6 +23,6 @@ Synchronization can be done using the two-pin header, and in software this is co
 
 Features to add later:
 
-  Closed loop control for boost stage, output stage
+  1 - Closed loop control for boost stage, output stage
 
-  Maximum Power Point Tracking (MPPT)
+  2 - Maximum Power Point Tracking (MPPT)
