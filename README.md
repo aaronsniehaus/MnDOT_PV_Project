@@ -21,12 +21,6 @@ EPWM 1 -6 run at 250kHz, and the filtered sine output around 60.3 Hz.
 Synchronization can be done using the two-pin header, and in software this is controlled by the "CheckMaster" function. If a master synchronization signal is not detected within 3 continuous power cycles, the software will change to master mode automatically.
 
 
-Features to add before summer:
-
-  PV low power shutoff
-
-  Soft start
-
 Features to add later:
 
   Closed loop control for boost stage, output stage
