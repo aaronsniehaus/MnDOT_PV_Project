@@ -112,7 +112,6 @@ double long TimeStamp[16] = {0,0,0,0};                  //Timestamps. A descript
 //
 const int SampleDepth = 50;                                         //Number of samples stored in ADC Matrices. Set this to however many samples you need.
 
-
 const double SampleDepthQuotient = (double)1/SampleDepth;           //Calculate beforehand to avoid divisions in the interrupts
 double ADCValues[2][8][SampleDepth];
 double ADCVoltages[2][8][SampleDepth];
@@ -131,7 +130,7 @@ int ErrorStatus = 0;
 //  "Real" Values
 //
 
-const double Constants[8] = {20,20,1,20,20,1,1,1};    //Scalars to convert input voltage to original value. Voltages = 20, Currents = 1(?)
+const double Scalars[8] = {20,20,1,20,20,1,1,1};    //Scalars to convert input voltage to original value. Voltages = 20, Currents = 1(?)
 
 double VpvRMS = 0;
 double IpvRMS = 0;
@@ -147,8 +146,8 @@ double ADC1DC = 0;
 //  Control System Parameters
 //
 
-float TargetDutyCycle[0] = 0.5;     //Assume 50% Boost Duty Cycle
-
+float TargetDutyCycle[6] = {0.5,0,0,0,0,0};     //Assume 50% Boost Duty Cycle
+int    Enable = 1;
 
 
 //
@@ -244,8 +243,8 @@ void InitializeADC (void);
 void Pulse(void);
 void Pulse2(void);
 void DelayLoop(int k);
-double GetDCVoltage(double InputData);
-double GetACVoltage(double InputData);
+double GetVoltage(double InputData);
+double GetVoltageUnbiased(double InputData);
 void UpdateADCMatrix();
 double GetRMS(double InputData[SampleDepth]);
 double GetACRMS (double InputData[SampleDepth]);
@@ -256,6 +255,7 @@ void ShortOutput(void);
 void Toggle(void);
 void CheckFault(void);
 void StartCpuTimers(void);
+void SoftStart(void);
 
 
 
@@ -455,13 +455,13 @@ void main(void)
 
 //
 //  EPWM1 ISR. Most operations are tied to the PWM1 interrupt. This can lead to glitches in the code when the instructions get too long.
-//              In the future, critical timing functions should be moved to a CpuTimer0, 1, or 2 interrupt. These are more stable.
+//  In the future, critical timing functions should be moved to a CpuTimer0, 1, or 2 interrupt. These are more stable.
 //
 
 __interrupt void 
 epwm1_isr(void)
 {
-    //Toggle();
+    Toggle();
     //
     // Clear INT flag for this timer
     //
@@ -470,20 +470,42 @@ epwm1_isr(void)
     Nanoseconds = Nanoseconds+12500;    //Nanoseconds is our global time. 12500 comes from the 12.5 us period of the wave measured on a scope.
 
     if (1==1){
-        TargetDutyCycle[0] = 0.5;
+        TargetDutyCycle[0] = 0;
     }
 
     UpdateADCMatrix();  //Update our ADC Values
 
 
-    VpvRMS   = Constants[0]*GetDCVoltage(GetRMS(ADCValues[0][0])); //Reference preset constants
-    VpriRMS  = Constants[1]*GetDCVoltage(GetRMS(ADCValues[0][1]));
-    //VpvRMS   = Constants[2]*GetACRMS(ADCValues[0][2]);
-    //VsecRMS  = Constants[3]*GetDCVoltage(GetRMS(ADCValues[0][3]));
-    //VoutRMS  = Constants[4]*GetACRMS(ADCValues[0][4]);
-    IoutRMS  = Constants[5]*GetACRMS(ADCValues[0][5]);
-    IpvRMS   = Constants[6]*GetDCVoltage(GetRMS(ADCValues[0][6]));
-    //CheckFault();
+    VpvRMS   = Scalars[0]*GetVoltage(GetAverage(ADCValues[0][0]));                   //DC Values are calculated taking the average of the bus.
+    VpriRMS  = Scalars[1]*GetVoltage(GetAverage(ADCValues[0][1]));
+    IpvRMS   = Scalars[2]*GetVoltage(GetAverage(ADCValues[0][2]));
+    VsecRMS  = Scalars[3]*GetVoltage(GetAverage(ADCValues[0][3]));
+    VoutRMS  = Scalars[4]*GetVoltageUnbiased(GetACRMS(ADCValues[0][4]));            //GetACRMS removes the DC component, so a different voltage conversion function is used.
+    IoutRMS  = Scalars[5]*GetVoltageUnbiased(GetACRMS(ADCValues[0][5]));
+    //IpvRMS   = Scalars[6]*GetVoltage(ADCValues[0][6][0]);
+
+
+    //
+    //  Disable the module if three faults happen in a row.
+    //
+
+    if (Enable == 1){
+            if (Nanoseconds - TimeStamp[4] >= 50000000){    //Wait for 3 powerline cycles, 50 ms.
+                if (ErrorStatus != 0){
+                    InitCMP();                              //Set CMP's to their defaults.
+                    EnableAllSwitches();                    //Try starting the switches again.
+
+                    ErrorStatus = 0;                        //Clear the error status.
+                    FaultCounter++;                         //Increment the fault counter.
+
+                    if (FaultCounter >= 3){
+                        Enable = 0;
+                    }
+                }
+            }
+        }
+
+    CheckFault();
 
 
     //
@@ -506,11 +528,12 @@ epwm1_isr(void)
 
     CheckMaster();                              //Check if we're the master or slave
 
+    EPwm1Regs.CMPA.half.CMPA = EPWM_PERIOD/2;
+
     SoftStart();
 
-    //Toggle();
-
     PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
+    Toggle();
 }
 
 
@@ -632,7 +655,7 @@ epwm1_tzint_isr(void)
 __interrupt void ADC_isr(void)
 {
      //
-     // If 40 conversions have been logged, start over
+     // If 10 conversions have been logged, start over
      //
      if(ConversionCount == 9)
      {
@@ -663,7 +686,7 @@ cpu_timer0_isr(void)
 {
     CpuTimer0.InterruptCount++;
     //Toggle();
-    // Nanoseconds = Nanoseconds+12100;   //Keeps track of number of nanoseconds past. Based on oscilloscope measurement of timer0.
+    // Nanoseconds = Nanoseconds+12100;   //Keeps track of number of nanoseconds past.
     //
     // Acknowledge this interrupt to receive more interrupts from group 1
     //
@@ -686,13 +709,13 @@ cpu_timer1_isr(void)
 
     //Toggle();
 
-    //VpvRMS   = Constants[0]*GetDCVoltage(GetRMS(ADCValues[0][0])); //Reference preset constants
-    //VpriRMS  = Constants[1]*GetDCVoltage(GetRMS(ADCValues[0][1]));
-    //VpvRMS   = Constants[2]*GetACRMS(ADCValues[0][2]);
-    //VsecRMS  = Constants[3]*GetDCVoltage(GetRMS(ADCValues[0][3]));
-    //VoutRMS  = Constants[4]*GetACRMS(ADCValues[0][4]);
-    //IoutRMS  = Constants[5]*GetACRMS(ADCValues[0][5]);
-    //IpvRMS   = Constants[6]*GetDCVoltage(GetRMS(ADCValues[0][6]));
+    //VpvRMS   = Scalars[0]*GetVoltage(GetRMS(ADCValues[0][0])); //Reference preset Scalars
+    //VpriRMS  = Scalars[1]*GetVoltage(GetRMS(ADCValues[0][1]));
+    //VpvRMS   = Scalars[2]*GetACRMS(ADCValues[0][2]);
+    //VsecRMS  = Scalars[3]*GetVoltage(GetRMS(ADCValues[0][3]));
+    //VoutRMS  = Scalars[4]*GetACRMS(ADCValues[0][4]);
+    //IoutRMS  = Scalars[5]*GetACRMS(ADCValues[0][5]);
+    //IpvRMS   = Scalars[6]*GetVoltage(GetRMS(ADCValues[0][6]));
     //CheckFault();
 
     //
@@ -1176,10 +1199,20 @@ DelayLoop(int k){
 //
 //  Converts Numbers from ADC Data to Voltages, with biasing considered.
 //
-double
-GetDCVoltage(double InputData){
+double GetVoltage(double InputData){
+    double Test = InputData - 35500;
+    double Voltage = ((InputData-35500)*0.00004538);
+    return Voltage;
 
-    double Voltage = ((InputData-36060)*0.00004538);
+}
+
+//
+//  Converts Numbers from ADC Data to Voltages, without biasing considered.
+//
+
+double GetVoltageUnbiased(double InputData){
+    double Test = InputData;
+    double Voltage = ((InputData)*0.00004538);
     return Voltage;
 
 }
@@ -1188,13 +1221,6 @@ GetDCVoltage(double InputData){
 //  Converts Numbers from ADC Data to Voltages, with no offset bias.
 //  This is good for AC signals where RMS has already been calculated.
 //
-double
-GetACVoltage(double InputData) {
-
-    double Voltage = ((InputData)*0.00004538);
-    return Voltage;
-
-}
 
 //
 //  Updates All ADC Values
@@ -1203,7 +1229,7 @@ void
 UpdateADCMatrix(void){
 
     for (i=0; i<=7; i++){                               //Reset CurrentSample when the sample reaches the end of the array
-        if (CurrentSample[i] >= SampleDepth-1){
+        if (CurrentSample[i] >= SampleDepth){
             CurrentSample[i] = 0;
         }
     }
@@ -1254,42 +1280,42 @@ UpdateADCMatrix(void){
 
         // Update ADC 4, ADCVoltages[] Respectively
 
-        //ADCValues[0][4][CurrentSample[4]]   = AdcRegs.ADCRESULT8;
+        ADCValues[0][4][CurrentSample[4]]   = AdcRegs.ADCRESULT8;
         //ADCVoltages[0][4][CurrentSample[4]] = GetVoltage(ADCValues[0][4][CurrentSample[4]]);
 
         //ADCValues[1][4][CurrentSample[4]]   = AdcRegs.ADCRESULT9;
         //ADCVoltages[1][4][CurrentSample[4]] = GetVoltage(ADCValues[1][4][CurrentSample[4]]);
-        //CurrentSample[4]++;
+        CurrentSample[4]++;
 
 
         // Update ADC 5, ADCVoltages[] Respectively
 
-        //ADCValues[0][5][CurrentSample[5]]   = AdcRegs.ADCRESULT10;
+        ADCValues[0][5][CurrentSample[5]]   = AdcRegs.ADCRESULT10;
         //ADCVoltages[0][5][CurrentSample[5]] = GetVoltage(ADCValues[0][5][CurrentSample[5]]);
 
         //ADCValues[1][5][CurrentSample[5]]   = AdcRegs.ADCRESULT11;
         //ADCVoltages[1][5][CurrentSample[5]] = GetVoltage(ADCValues[1][5][CurrentSample[5]]);
-        //CurrentSample[5]++;
+        CurrentSample[5]++;
 
 
         // Update ADC 6, ADCVoltages[] Respectively
 
-        //ADCValues[0][6][CurrentSample[6]]   = AdcRegs.ADCRESULT12;
+        ADCValues[0][6][CurrentSample[6]]   = AdcRegs.ADCRESULT12;
         //ADCVoltages[0][6][CurrentSample[6]] = GetVoltage(ADCValues[0][6][CurrentSample[6]]);
 
         //ADCValues[1][0][CurrentSample[6]]   = AdcRegs.ADCRESULT13;
         //ADCVoltages[1][0][CurrentSample[6]] = GetVoltage(ADCValues[1][0][CurrentSample[6]]);
-        //CurrentSample[6]++;
+        CurrentSample[6]++;
 
 
         // Update ADC 7, ADCVoltages[] Respectively
 
-        //ADCValues[0][7][CurrentSample[7]]   = AdcRegs.ADCRESULT14;
+        ADCValues[0][7][CurrentSample[7]]   = AdcRegs.ADCRESULT14;
         //ADCVoltages[0][7][CurrentSample[7]] = GetVoltage(ADCValues[0][7][CurrentSample[7]]);
         //
         //ADCValues[1][7][CurrentSample[7]]   = AdcRegs.ADCRESULT15;
         //ADCVoltages[1][7][CurrentSample[7]] = GetVoltage(ADCValues[1][7][CurrentSample[7]]);
-        //CurrentSample[7]++;
+        CurrentSample[7]++;
 
 
         ConversionCounter = ADCIntCounter;
@@ -1301,7 +1327,7 @@ UpdateADCMatrix(void){
 //  Calculate RMS value of given samples
 //
 double GetRMS(double InputData[SampleDepth]) {
-    double Sum = 0;
+    int Sum = 0;
 
     for (i=0; i<SampleDepth;i++) {
             Square[i]=0;
@@ -1309,13 +1335,17 @@ double GetRMS(double InputData[SampleDepth]) {
 
     for (i=0; i < SampleDepth; i++){                        //Square the samples
         Square[i] = InputData[i]*InputData[i];
-        Sum = Sum + Square[i];                              //Calculate the sum
+        int Sum = (int) (Sum + Square[i]);                              //Calculate the sum
     }
 
-    double RMSOut = sqrt(Sum * SampleDepthQuotient);           //SampleDepthQuotient = 1/SampleDepth.
+    double RMSOut = (double) sqrt(Sum * SampleDepthQuotient);           //SampleDepthQuotient = 1/SampleDepth.
                                                                     //Use this to compute the mean of Square[], and then take sqrt.
     return RMSOut;
 }
+
+//
+//  Revisit this. Doesn't work correctly.
+//
 
 double
 GetACRMS (double InputData[SampleDepth]){
@@ -1401,13 +1431,13 @@ void ShortOutput(void){
 
 void CheckFault(void){
 
-    if (VpvRMS >= 50){
+    if (VpvRMS >= 45){
         ErrorStatus = 1;
         DisableAllSwitches();
         TimeStamp[4] = Nanoseconds;
         ShortOutput();
     }
-    if (VpvRMS <= 30){
+    if (VpvRMS <= 10){
         ErrorStatus = 2;
         DisableAllSwitches();
         TimeStamp[4] = Nanoseconds;
@@ -1427,22 +1457,22 @@ void CheckFault(void){
         TimeStamp[4] = Nanoseconds;
     }
     if (VpriRMS <= 0){
-        ErrorStatus = 5;
-        DisableAllSwitches();
+        //ErrorStatus = 5;
+        //DisableAllSwitches();
         TimeStamp[4] = Nanoseconds;
     }
 
 
     if (VsecRMS >= 65){
-        ErrorStatus = 6;
-        DisableAllSwitches();
+        //ErrorStatus = 6;
+        //DisableAllSwitches();
         TimeStamp[4] = Nanoseconds;
         }
-    if (VsecRMS <= 0){
-        ErrorStatus = 7;
-        DisableAllSwitches();
-        TimeStamp[4] = Nanoseconds;
-    }
+    //if (VsecRMS <= 0){
+    //    ErrorStatus = 7;
+    //    DisableAllSwitches();
+    //    TimeStamp[4] = Nanoseconds;
+    //}
 
 
     if (VoutRMS >= 65){
@@ -1466,25 +1496,6 @@ void CheckFault(void){
 
     }
 
-
-
-    else{
-        if (Enable == 1){
-        if (Nanoseconds - TimeStamp[4] >= 50000000){    //Wait for 3 powerline cycles, 50 ms.
-            if (ErrorStatus != 0){
-                InitCMP();                              //Set CMP's to their defaults.
-                EnableAllSwitches();                    //Try starting the switches again.
-
-                ErrorStatus = 0;                        //Clear the error status.
-                FaultCounter++;                         //Increment the fault counter.
-
-                if (FaultCounter >= 3){
-                    Enable = 0;
-                }
-            }
-        }
-    }
-    }
     return;
 }
 
